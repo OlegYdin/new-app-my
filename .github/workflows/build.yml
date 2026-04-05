@@ -1,0 +1,105 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build APK
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install buildozer cython==0.29.33 kivy
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git ffmpeg libsdl2-dev libsdl2-image-dev \
+            libsdl2-mixer-dev libsdl2-ttf-dev libportmidi-dev libswscale-dev \
+            libavformat-dev libavcodec-dev zlib1g-dev libunwind-dev \
+            libgstreamer1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            unzip autoconf automake libtool pkg-config zip lld
+
+      - name: Setup Android SDK
+        run: |
+          SDK_DIR=$HOME/.buildozer/android/platform/android-sdk
+          mkdir -p $SDK_DIR/cmdline-tools/latest
+          cd $SDK_DIR/cmdline-tools/latest
+          wget https://redirector.gvt1.com/edgedl/android/repository/commandlinetools-linux-6514223_latest.zip -O sdk-tools.zip
+          unzip sdk-tools.zip
+          mv tools/* . 2>/dev/null || true
+          rmdir tools 2>/dev/null || true
+          cd $SDK_DIR
+          ln -s cmdline-tools/latest tools
+          export PATH=$SDK_DIR/cmdline-tools/latest/bin:$PATH
+          yes | $SDK_DIR/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK_DIR --licenses || true
+          $SDK_DIR/cmdline-tools/latest/bin/sdkmanager --sdk_root=$SDK_DIR "platform-tools" "platforms;android-33" "build-tools;33.0.0"
+
+      - name: Download Android NDK
+        run: |
+          mkdir -p $HOME/.buildozer/android/platform
+          cd $HOME/.buildozer/android/platform
+          wget https://redirector.gvt1.com/edgedl/android/repository/android-ndk-r25b-linux.zip -O ndk.zip
+          unzip ndk.zip
+          rm ndk.zip
+
+      - name: Clean build cache
+        run: |
+          rm -rf .buildozer/android/platform/build-*
+
+      - name: Build APK with Buildozer
+        run: |
+          # Удаляем стандартные переменные GitHub, чтобы не было конфликтов
+          unset ANDROID_HOME
+          unset ANDROID_SDK_ROOT
+          unset ANDROID_NDK_HOME
+          unset ANDROID_NDK_ROOT
+          
+          # Указываем наши пути
+          export ANDROID_SDK_ROOT=$HOME/.buildozer/android/platform/android-sdk
+          export ANDROID_NDK_ROOT=$HOME/.buildozer/android/platform/android-ndk-r25b
+          
+          export PIP_BREAK_SYSTEM_PACKAGES=1
+          export JAVA_HOME=/usr/lib/jvm/temurin-17-jdk-amd64
+          export PATH=$JAVA_HOME/bin:$PATH
+          export GRADLE_OPTS="-Xmx4096m"
+          buildozer -v android debug
+        env:
+          GRADLE_OPTS: "-Xmx4096m"
+
+      - name: Show Error Logs if Failed
+        if: failure()
+        run: |
+          echo "========================================"
+          echo " GRADLE ERROR LOGS:"
+          echo "========================================"
+          find .buildozer -name "*.log" -exec tail -n 50 {} \; 2>/dev/null || true
+          find .buildozer -name "gradle.log" -exec cat {} \; 2>/dev/null || true
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: New-App-APK
+          path: |
+            bin/*.apk
